@@ -16,11 +16,12 @@ from src.simulation import SimulationVisualizer
 # ==========================================
 # USER CONFIGURATION: EDIT YOUR PHONE IPs HERE
 # ==========================================
+# For DroidCam: The system will automatically try /video and /mjpegfeed
 CAMERA_SOURCES = [
-    "http://192.168.130.45:4747/mjpegfeed",  # Road 1 (Phone 1)
-    "http://192.168.130.224:4747/mjpegfeed", # Road 2 (Phone 2)
-    "0",                                    # Road 3 (Slot 3)
-    "1"                                     # Road 4 (Slot 4)
+    "http://192.168.130.118:4747/video",  # Road 1 (Phone 1)
+    "http://192.168.130.224:4747/video", # Road 2 (Phone 2)
+    "0",                                 # Road 3 (PC Webcam 1)
+    "1"                                  # Road 4 (PC Webcam 2)
 ]
 # ==========================================
 
@@ -44,23 +45,29 @@ def open_cameras(mode: str, camera_args: list):
                 continue
             
             print(f"Connecting to Road {i+1} Source: {src}...", end=" ", flush=True)
+            
             if str(src).isdigit():
                 idx = int(src)
                 cap = cv2.VideoCapture(idx, backend)
             else:
-                # WiFi/Phone URLs
-                cap = cv2.VideoCapture(src)
+                # WiFi/Phone URLs - Try Primary
+                cap = cv2.VideoCapture(str(src))
+                if not cap.isOpened():
+                    # Fallback Strategy: Swap /video <-> /mjpegfeed
+                    fallback = src.replace("/video", "/mjpegfeed") if "/video" in src else src.replace("/mjpegfeed", "/video")
+                    if fallback != src:
+                        print(f"\n  FALLBACK: {fallback}...", end=" ", flush=True)
+                        cap = cv2.VideoCapture(fallback)
             
-            if cap.isOpened():
+            if cap and cap.isOpened():
                 print("SUCCESS")
                 caps.append(cap)
             else:
                 print("FAILED")
+                if not str(src).isdigit():
+                    print("  [TIP] Ensure DroidCam PC Client is CLOSED and phone app is OPEN.")
                 caps.append(None)
         
-        if mode == "demo" and len(caps) == 1 and caps[0]:
-            return [caps[0]] * 4
-            
         while len(caps) < 4:
             caps.append(None)
         return caps
@@ -99,7 +106,7 @@ def main():
     visualizer = SimulationVisualizer()
 
     caps = open_cameras(mode, args.cameras)
-    print("System Started. Press 'q' to exit.")
+    print("\nSystem Started. Press 'q' to exit.")
 
     try:
         while True:
