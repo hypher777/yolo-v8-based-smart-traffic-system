@@ -13,104 +13,119 @@ from src.traffic_logic import TrafficController
 from src.arduino_comm import ArduinoComm
 from src.simulation import SimulationVisualizer
 
+import threading
+
 # ==========================================
-# USER CONFIGURATION: EDIT YOUR PHONE IPs HERE
+# USER CONFIGURATION: 2 ROADS ONLY
 # ==========================================
-# For DroidCam: The system will automatically try /video and /mjpegfeed
 CAMERA_SOURCES = [
-    "http://192.168.130.118:4747/video",  # Road 1 (Phone 1)
-    "http://192.168.130.224:4747/video", # Road 2 (Phone 2)
-    "0",                                 # Road 3 (PC Webcam 1)
-    "1"                                  # Road 4 (PC Webcam 2)
+    "http://192.168.130.118:4747/video",  # Road 1
+    "http://192.168.130.224:4747/video"   # Road 2
 ]
 # ==========================================
 
-def open_cameras(mode: str, camera_args: list):
-    caps = []
-    backend = cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_ANY
+class CameraStream:
+    """Threaded camera reader to eliminate lag and make process faster."""
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(str(src))
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.status, self.frame = self.cap.read()
+        self.stopped = False
+        self.thread = threading.Thread(target=self.update, args=())
+        self.thread.daemon = True
 
+    def start(self):
+        self.thread.start()
+        return self
+
+    def update(self):
+        while not self.stopped:
+            if not self.cap.isOpened():
+                self.stopped = True
+                break
+            (self.status, self.frame) = self.cap.read()
+
+    def get_frame(self):
+        return self.frame if self.status else None
+
+    def stop(self):
+        self.stopped = True
+        self.cap.release()
+
+def open_cameras(mode, camera_args):
+    streams = []
     if mode == "simulation":
-        video_files = [f"videos/road{i}.mp4" for i in range(1, 5)]
+        video_files = [f"videos/road{i}.mp4" for i in range(1, 3)]
         for vf in video_files:
             if os.path.exists(vf):
-                caps.append(cv2.VideoCapture(vf))
+                cap = cv2.VideoCapture(vf)
+                streams.append(cap)
             else:
-                caps.append(None)
-        return caps
+                streams.append(None)
+        return streams
 
-    if mode == "demo" or mode == "live":
-        for i, src in enumerate(camera_args[:4]):
-            if src is None:
-                caps.append(None)
-                continue
-            
-            print(f"Connecting to Road {i+1} Source: {src}...", end=" ", flush=True)
-            
-            if str(src).isdigit():
-                idx = int(src)
-                cap = cv2.VideoCapture(idx, backend)
-            else:
-                # WiFi/Phone URLs - Try Primary
-                cap = cv2.VideoCapture(str(src))
-                if not cap.isOpened():
-                    # Fallback Strategy: Swap /video <-> /mjpegfeed
-                    fallback = src.replace("/video", "/mjpegfeed") if "/video" in src else src.replace("/mjpegfeed", "/video")
-                    if fallback != src:
-                        print(f"\n  FALLBACK: {fallback}...", end=" ", flush=True)
-                        cap = cv2.VideoCapture(fallback)
-            
-            if cap and cap.isOpened():
-                print("SUCCESS")
-                caps.append(cap)
+    for i, src in enumerate(camera_args[:2]):
+        print(f"Connecting to Road {i+1} Source: {src}...", end=" ", flush=True)
+        stream = CameraStream(src).start()
+        time.sleep(1) # Give time to buffer
+        if stream.status:
+            print("SUCCESS")
+            streams.append(stream)
+        else:
+            print("FAILED. Attempting Fallback...")
+            stream.stop()
+            fallback = src.replace("/video", "/mjpegfeed") if "/video" in src else src.replace("/mjpegfeed", "/video")
+            stream = CameraStream(fallback).start()
+            if stream.status:
+                print("SUCCESS (Fallback)")
+                streams.append(stream)
             else:
                 print("FAILED")
-                if not str(src).isdigit():
-                    print("  [TIP] Ensure DroidCam PC Client is CLOSED and phone app is OPEN.")
-                caps.append(None)
-        
-        while len(caps) < 4:
-            caps.append(None)
-        return caps
+                streams.append(None)
+    return streams
 
-    return [None] * 4
-
-def read_frames(caps):
+def read_frames(streams, mode):
     frames = []
-    cache = {}
-    for cap in caps:
-        if cap is None:
+    for s in streams:
+        if s is None:
             frames.append(None)
-            continue
-        cap_id = id(cap)
-        if cap_id not in cache:
-            ret, frame = cap.read()
-            cache[cap_id] = (ret, frame)
-        ret, frame = cache[cap_id]
-        frames.append(frame if ret else None)
+        elif mode == "simulation":
+            ret, f = s.read()
+            frames.append(f if ret else None)
+        else:
+            frames.append(s.get_frame())
     return frames
 
 def main():
     parser = argparse.ArgumentParser(description='Smart Traffic Signal Control')
     parser.add_argument('--mode', choices=['simulation', 'demo', 'live'], default='simulation')
-    parser.add_argument('--cameras', nargs='+', default=CAMERA_SOURCES, help='Camera indices or URLs')
-    parser.add_argument('--port', type=str, default='COM5', help='Arduino Port')
+    parser.add_argument('--cameras', nargs='+', default=CAMERA_SOURCES)
+    parser.add_argument('--port', type=str, default='COM5')
     args = parser.parse_args()
 
-    mode = args.mode
-    print(f"Initializing Smart Traffic System | Mode: {mode.upper()}")
+    print(f"Initializing Smart Traffic (2 ROADS) | Mode: {args.mode.upper()}")
     
-    detector = VehicleDetector()
+    # Create a single shared YOLO model instance to save memory and CPU
+    base_detector = VehicleDetector()
+    road_detectors = [base_detector, VehicleDetector(model_instance=base_detector.model)]
+    
     emergency_logic = EmergencyHandler()
-    controller = TrafficController(num_roads=4)
-    arduino = ArduinoComm(port=args.port, simulation_mode=(mode == "simulation"))
+    controller = TrafficController(num_roads=2) # Locked to 2
+    arduino = ArduinoComm(port=args.port, simulation_mode=(args.mode == "simulation"))
     visualizer = SimulationVisualizer()
 
-    caps = open_cameras(mode, args.cameras)
-    print("\nSystem Started. Press 'q' to exit.")
-
+    caps = open_cameras(args.mode, args.cameras)
+    frame_count = 0
+    detector_cache = {} 
+    
     try:
         while True:
-            raw_frames = read_frames(caps)
+            raw_frames = read_frames(caps, args.mode)
+            frame_count += 1
+            
+            # FAST PROCESS: Only detect every 3rd frame to maximize speed
+            # The visual will still be smooth since we draw labels on cached results
+            run_detection = (frame_count % 3 == 0)
             
             annotated_frames = []
             vehicle_counts = []
@@ -118,9 +133,14 @@ def main():
 
             for i, frame in enumerate(raw_frames):
                 if frame is not None:
-                    ann, count, emg_list = detector.detect(frame)
-                    is_emg, emg_type = emergency_logic.check_emergency(emg_list)
+                    if run_detection:
+                        # Use the specific detector for this road
+                        ann, count, emg_list = road_detectors[i].detect(frame)
+                        detector_cache[i] = (ann, count, emg_list)
+                    else:
+                        ann, count, emg_list = detector_cache.get(i, (frame, 0, []))
                     
+                    is_emg, emg_type = emergency_logic.check_emergency(emg_list)
                     annotated_frames.append(ann)
                     vehicle_counts.append(count)
                     emergency_statuses.append(emg_type if is_emg else None)
@@ -129,29 +149,22 @@ def main():
                     vehicle_counts.append(0)
                     emergency_statuses.append(None)
 
-            signal_states, switch_happened = controller.decide_signals(vehicle_counts, emergency_statuses)
-            
-            if switch_happened or any(emergency_statuses):
+            signal_states, switch = controller.decide_signals(vehicle_counts, emergency_statuses)
+            if switch or any(emergency_statuses):
                 for i, state in enumerate(signal_states):
                     arduino.send_command(i, state)
 
             grid = visualizer.display_multiview(annotated_frames, signal_states, vehicle_counts, emergency_statuses)
             cv2.imshow("Smart Traffic Control", grid)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            if cv2.waitKey(1) & 0xFF == ord('q'): break
                 
-    except KeyboardInterrupt:
-        pass
     finally:
-        seen = set()
-        for cap in caps:
-            if cap and id(cap) not in seen:
-                cap.release()
-                seen.add(id(cap))
+        for s in caps: 
+            if s:
+                if hasattr(s, 'stop'): s.stop()
+                elif hasattr(s, 'release'): s.release()
         arduino.close()
         cv2.destroyAllWindows()
-        print("\nExited.")
 
 if __name__ == "__main__":
     main()

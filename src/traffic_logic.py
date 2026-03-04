@@ -7,6 +7,7 @@ class TrafficController:
         self.max_green_time = max_green_time
         self.max_wait_time = max_wait_time
         self.yellow_time = yellow_time
+        self.emergency_yellow_time = 1.0 # Faster transition for emergency safety
         
         # State
         self.current_green = 0  # Road index 0-3
@@ -28,7 +29,9 @@ class TrafficController:
         
         # 0. HANDLE YELLOW TRANSITION
         if self.next_green != -1:
-            if current_time - self.yellow_start_time >= self.yellow_time:
+            # Use standard or quick yellow depending on mode
+            y_time = self.emergency_yellow_time if self.is_emergency_mode else self.yellow_time
+            if current_time - self.yellow_start_time >= y_time:
                 # Transition complete: Yellow -> Red, Next -> Green
                 old_green = self.current_green
                 self.current_green = self.next_green
@@ -52,9 +55,11 @@ class TrafficController:
         
         if emergency_road != -1:
             if self.current_green != emergency_road:
-                print(f"\n--- [EMERGENCY] Initiating switch to Road {emergency_road+1} ---")
+                print(f"\n--- [EMERGENCY] Initiating INSTANT switch to Road {emergency_road+1} ---")
+                self.is_emergency_mode = True # Set mode for quick yellow
                 self._init_switch(emergency_road)
                 return self.states, True
+            self.is_emergency_mode = True # Stay in mode if already green
             return self.states, False
         
         self.is_emergency_mode = False
