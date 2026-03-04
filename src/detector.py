@@ -8,16 +8,23 @@ class VehicleDetector:
         """
         Initialize YOLOv8 models.
         """
-        self.models = {}
         self.tracker = {} # {id: {'box': [x1,y1,x2,y2], 'missed': 0, 'conf': c}}
         self.emergency_history = {} # {id: [last_5_statuses]}
         
-        self.model_path = f"{models_dir}/best.pt"
+        # Strictly use best.pt
+        self.model_path = os.path.join(models_dir, "best.pt")
         if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"CRITICAL: {self.model_path} not found.")
+            # Fallback to local directory if models/ not found
+            self.model_path = "best.pt"
             
-        print(f"Loading Prototype Model: {self.model_path}")
-        self.models['base'] = YOLO(self.model_path)
+        if not os.path.exists(self.model_path):
+             print(f"WARNING: '{self.model_path}' not found. Ensure your trained model is in the folder.")
+             # We won't raise error here to allow system to start (though detection will fail)
+             self.model = None
+        else:
+            print(f"Loading Trained Model: {self.model_path}")
+            self.model = YOLO(self.model_path)
+            
         self.vehicle_classes = [0] 
 
     def detect(self, frame):
@@ -25,6 +32,9 @@ class VehicleDetector:
         Advanced Detection with Hysteresis, Persistence, and ArUco Markers.
         ArUco ID 1 -> Ambulance, ID 2 -> Fire Truck
         """
+        if self.model is None:
+            return frame, 0, []
+
         # 1. Setup ArUco detector (Dictionary 4x4)
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
         aruco_params = cv2.aruco.DetectorParameters()
@@ -39,7 +49,7 @@ class VehicleDetector:
         aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
         
         # 2. Run YOLO with hysteresis confidence
-        results = self.models['base'](frame, verbose=False, conf=0.35)[0]
+        results = self.model(frame, verbose=False, conf=0.35)[0]
         
         current_detections = []
         for box in results.boxes:
@@ -70,11 +80,8 @@ class VehicleDetector:
 
         self.tracker = new_tracker
         
-        # 4. ArUco Marker - GLOBAL SEARCH (Fallback/Primary for robustness)
-        # Sometimes YOLO boxes are too tight, so we scan the whole frame for markers
+        # 4. ArUco Marker - GLOBAL SEARCH
         global_corners, global_ids, _ = aruco_detector.detectMarkers(frame)
-        
-        # Map of {vid: status} found this frame
         frame_emergency_map = {}
         
         if global_ids is not None:
@@ -85,12 +92,11 @@ class VehicleDetector:
                 elif marker_id == 2: status_type = 'fire truck'
                 
                 if status_type:
-                    # Find the closest vehicle to this marker
                     m_corners = global_corners[i][0]
-                    m_center = np.mean(m_corners, axis=0) # [x, y]
+                    m_center = np.mean(m_corners, axis=0)
                     
                     best_vid = None
-                    min_dist = 150 # Max distance to associate a marker with a car
+                    min_dist = 150
                     
                     for vid, data in self.tracker.items():
                         x1, y1, x2, y2 = data['box']
@@ -103,16 +109,12 @@ class VehicleDetector:
                     
                     if best_vid is not None:
                         frame_emergency_map[best_vid] = status_type
-                        print(f"[DEBUG] ArUco ID {marker_id} matched to Vehicle {best_vid}")
-                    else:
-                        print(f"[DEBUG] ArUco ID {marker_id} detected but NO NEAREST VEHICLE within {min_dist}px")
-
-        # 5. Annotation and Final Classification
+        
+        # 5. Annotation
         emergency_list = []
         vehicle_count = 0
         annotated_frame = frame.copy()
 
-        # Visual confirmation for all markers found
         if global_ids is not None:
             cv2.aruco.drawDetectedMarkers(annotated_frame, global_corners, global_ids)
 
@@ -122,16 +124,12 @@ class VehicleDetector:
             vehicle_count += 1
             x1, y1, x2, y2 = data['box']
             conf = int(data['conf'] * 100)
-            
-            # Use status from global map found this frame
             status = frame_emergency_map.get(vid, None)
             
-            # Temporal Smoothing (2/5)
             if vid not in self.emergency_history: self.emergency_history[vid] = []
             self.emergency_history[vid].append(status)
             if len(self.emergency_history[vid]) > 5: self.emergency_history[vid].pop(0)
             
-            # Final Smoothed Status
             history = self.emergency_history[vid]
             final_status = None
             for s_type in ['ambulance', 'fire truck']:
@@ -139,25 +137,19 @@ class VehicleDetector:
                     final_status = s_type
                     break
             
-            # Default Label from YOLO
-            class_names = self.models['base'].names
-            base_label = class_names[0] if class_names else "vehicle"
+            base_label = self.model.names[0] if self.model and self.model.names else "vehicle"
             
-            # Annotation
             if final_status:
                 emergency_list.append(final_status)
                 color = (0, 0, 255) if final_status == 'fire truck' else (255, 0, 255)
                 display_label = f"{final_status.upper()} {conf}%"
                 thickness = 3
             else:
-                color = (255, 0, 0) # Blue
+                color = (255, 0, 0)
                 display_label = f"{base_label} {conf}%"
                 thickness = 2
                 
-            # Draw Bounding Box
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-            
-            # Visible Labels
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.6
             (tw, th), _ = cv2.getTextSize(display_label, font, font_scale, 2)
