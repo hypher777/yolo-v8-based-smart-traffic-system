@@ -71,6 +71,13 @@ class SimulationVisualizer:
             title = "Smart Traffic Control - Dual View"
         else:
             # 2x2 Grid for 3 or 4 roads
+            # Ensure we have at least 4 placeholders for the grid
+            while len(display_frames) < 4:
+                blank = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(blank, "Disabled", (220, 240), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 100, 100), 2)
+                display_frames.append(blank)
+                
             top_row = np.hstack((display_frames[0], display_frames[1]))
             bot_row = np.hstack((display_frames[2], display_frames[3]))
             grid = np.vstack((top_row, bot_row))

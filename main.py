@@ -20,16 +20,16 @@ import threading
 # ==========================================
 CAMERA_SOURCES = [
     "http://192.168.130.118:4747/video",  # Road 1
-    "http://192.168.130.224:4747/video",  # Road 2
-    "http://192.168.130.96:4747/video",  # Road 3 (Placeholder)
-    "http://192.168.130.214:4747/video"   # Road 4 (Placeholder)
+    "http://192.168.130.224:4747/video"   # Road 2
 ]
 # ==========================================
 
 class CameraStream:
     """Threaded camera reader to eliminate lag and make process faster."""
     def __init__(self, src):
-        self.cap = cv2.VideoCapture(str(src))
+        # Convert numeric strings like "0" or "1" to integers for cv2.VideoCapture
+        actual_src = int(src) if str(src).isdigit() else src
+        self.cap = cv2.VideoCapture(actual_src)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.status, self.frame = self.cap.read()
         self.stopped = False
@@ -57,8 +57,7 @@ class CameraStream:
 def open_cameras(mode, camera_args):
     streams = []
     if mode == "simulation":
-        # Assume up to 4 video files for simulation based on camera count
-        video_files = [f"videos/road{i}.mp4" for i in range(1, len(camera_args) + 1)]
+        video_files = [f"videos/road{i}.mp4" for i in range(1, 3)]
         for vf in video_files:
             if os.path.exists(vf):
                 cap = cv2.VideoCapture(vf)
@@ -67,7 +66,7 @@ def open_cameras(mode, camera_args):
                 streams.append(None)
         return streams
 
-    for i, src in enumerate(camera_args):
+    for i, src in enumerate(camera_args[:2]):
         print(f"Connecting to Road {i+1} Source: {src}...", end=" ", flush=True)
         stream = CameraStream(src).start()
         time.sleep(1) # Give time to buffer
@@ -77,13 +76,17 @@ def open_cameras(mode, camera_args):
         else:
             print("FAILED. Attempting Fallback...")
             stream.stop()
-            fallback = src.replace("/video", "/mjpegfeed") if "/video" in src else src.replace("/mjpegfeed", "/video")
-            stream = CameraStream(fallback).start()
-            if stream.status:
-                print("SUCCESS (Fallback)")
-                streams.append(stream)
+            if isinstance(src, str) and "/video" in src:
+                fallback = src.replace("/video", "/mjpegfeed")
+                stream = CameraStream(fallback).start()
+                if stream.status:
+                    print("SUCCESS (Fallback)")
+                    streams.append(stream)
+                else:
+                    print("FAILED")
+                    streams.append(None)
             else:
-                print("FAILED")
+                print("FAILED (No Fallback)")
                 streams.append(None)
     return streams
 
@@ -106,14 +109,14 @@ def main():
     parser.add_argument('--port', type=str, default='COM5')
     args = parser.parse_args()
 
-    print(f"Initializing Smart Traffic ({len(args.cameras)} ROADS) | Mode: {args.mode.upper()}")
+    print(f"Initializing Smart Traffic (2 ROADS) | Mode: {args.mode.upper()}")
     
     # Create a single shared YOLO model instance to save memory and CPU
     base_detector = VehicleDetector()
-    road_detectors = [base_detector] + [VehicleDetector(model_instance=base_detector.model) for _ in range(len(args.cameras) - 1)]
+    road_detectors = [base_detector, VehicleDetector(model_instance=base_detector.model)]
     
     emergency_logic = EmergencyHandler()
-    controller = TrafficController(num_roads=len(args.cameras))
+    controller = TrafficController(num_roads=2) # Locked to 2
     arduino = ArduinoComm(port=args.port, simulation_mode=(args.mode == "simulation"))
     visualizer = SimulationVisualizer()
 

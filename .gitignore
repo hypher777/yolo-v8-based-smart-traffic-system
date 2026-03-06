@@ -1,7 +1,9 @@
 # Large binary files
-*.pt
+# (Wait, let's allow our trained models)
+!models/best.pt
 yolov8n.pt
-models/
+runs/
+
 
 # Video files
 videos/
