@@ -65,7 +65,8 @@ class SimulationVisualizer:
             display_frames.append(f)
 
         # Build adaptive grid
-        if num_active <= 2:
+        num_total = len(frames)
+        if num_total <= 2:
             # 1x2 Grid Side-by-Side (Road 1 and Road 2)
             grid = np.hstack((display_frames[0], display_frames[1]))
             title = "Smart Traffic Control - Dual View"
